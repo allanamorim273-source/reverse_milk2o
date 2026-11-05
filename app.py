@@ -34,7 +34,11 @@ COL_OBRIG = [
     "cv",
 ] + COL_DATAS
 
-st.set_page_config(page_title="ReverseMilk", page_icon="🥛", layout="wide")
+st.set_page_config(
+    page_title="ReverseMilk – Planejamento Reverso e Simulação de Cenários Produtivos",
+    page_icon="🥛",
+    layout="wide",
+)
 
 # ---------------------------------------------------------------- ESTILIZAÇÃO CSS COMPLETA
 st.markdown(
@@ -58,7 +62,7 @@ st.markdown(
             color: #E2E8F0 !important;
         }
 
-        /* Sliders na Sidebar - Trilha e Marcadores em Azul Tecnológico */
+        /* Sliders na Sidebar */
         [data-testid="stSidebar"] div[data-baseweb="slider"] div[style*="background-color: rgb(255, 75, 75)"],
         [data-testid="stSidebar"] div[data-baseweb="slider"] div[style*="background-color: red"] {
             background-color: #1E88E5 !important;
@@ -70,14 +74,14 @@ st.markdown(
             box-shadow: 0 0 8px rgba(0, 229, 255, 0.6) !important;
         }
 
-        /* Valores numéricos vermelhos dos Sliders na Sidebar */
+        /* Valores numéricos dos Sliders na Sidebar */
         [data-testid="stSidebar"] [data-testid="stWidgetLabel"] + div [data-testid="stMarkdownContainer"] p,
         [data-testid="stSidebar"] div[data-testid="stSliderTickBar"] + div {
             color: #00E5FF !important;
             font-weight: 700 !important;
         }
 
-        /* Radio Buttons na Sidebar (Modo de visualização) */
+        /* Radio Buttons na Sidebar */
         [data-testid="stSidebar"] div[role="radiogroup"] label div[first-child="true"] {
             border-color: #1E88E5 !important;
         }
@@ -106,7 +110,7 @@ st.markdown(
             box-shadow: 0 0 10px rgba(0, 229, 255, 0.5) !important;
         }
 
-        /* Inputs Numéricos e Selects na Sidebar */
+        /* Inputs Numéricos na Sidebar */
         [data-testid="stSidebar"] div[data-baseweb="input"] {
             background-color: #12161F !important;
             border: 1px solid #1E293B !important;
@@ -385,7 +389,7 @@ d, r = calcular(df, agora, tol, risco, sims)
 ativas = r[~r.status.str.startswith("Concluída")]
 
 # Cabeçalho Principal Estilizado
-st.markdown("# Planejamento Reverso & Cenários")
+st.markdown("# ReverseMilk – Planejamento Reverso e Simulação de Cenários Produtivos")
 st.caption(f"Status simulado: {agora:%d/%m/%Y às %H:%M} · {origem}")
 
 if OP:
