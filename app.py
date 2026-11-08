@@ -263,7 +263,13 @@ with tab_mc:
 # <<3D
 COR_FAB = {"Ocioso": "#64748B", "No prazo": "#10B981", "Em risco": "#F59E0B", "Atrasada": "#EF4444"}
 GRAVIDADE = {"Ocioso": 0, "No prazo": 1, "Em risco": 2, "Atrasada": 3}
-METAL, ESCURO = "#CBD5E1", "#1E293B"
+METAL = "#CBD5E1"
+TEMAS = {
+    "Escuro": dict(bg="rgba(0,0,0,0)", piso="#111827", base="#0F172A", escuro="#1E293B", grade="#1F2937",
+                   tubo="#475569", txt="#CBD5E1", ocioso="#64748B", amb=0.55, trilho="#334155", btn="#1A2130"),
+    "Claro (projetor)": dict(bg="#EEF2F7", piso="#CBD5E1", base="#94A3B8", escuro="#475569", grade="#B6C2D1",
+                             tubo="#64748B", txt="#1E293B", ocioso="#94A3B8", amb=0.78, trilho="#94A3B8", btn="#FFFFFF"),
+}
 
 
 def _tipo(nome):
@@ -307,8 +313,9 @@ class _Malha:
         self._add(v, [(n + k, n + (k + 1) % n, 2 * n) for k in range(n)], -1, METAL)
 
 
-def geometria(recs, pares):
+def geometria(recs, pares, tema):
     """Layout + malha estática da fábrica (calculada uma vez)."""
+    tm = TEMAS[tema]
     ordem = dict(recs)
     pos, cont = {}, {}
     for rec in sorted(ordem, key=lambda n: (ordem[n], n)):
@@ -317,25 +324,25 @@ def geometria(recs, pares):
     m, topo, nomes = _Malha(), {}, list(pos)
     for idx, rec in enumerate(nomes):
         x, y = pos[rec]; cx, cy = x + 1.7, y + 1.5; t = _tipo(rec)
-        m.caixa(cx - 1.6, cy - 1.4, 0, 3.2, 2.8, 0.15, -1, "#0F172A")  # base
+        m.caixa(cx - 1.6, cy - 1.4, 0, 3.2, 2.8, 0.15, -1, tm["base"])  # base
         if t == "tanque":
             m.cilindro(cx, cy, 0.15, 1.2, 3.2, idx, "", 22); zt = 3.4
         elif t == "torre":
             m.cilindro(cx, cy, 0.15, 0.9, 4.8, idx, "", 22); zt = 5.0
         elif t == "linha":
             m.caixa(cx - 1.5, cy - 0.8, 0.15, 3.0, 1.6, 0.8, idx, "")
-            m.caixa(cx - 1.5, cy - 0.5, 0.95, 3.0, 1.0, 0.15, -1, ESCURO)
+            m.caixa(cx - 1.5, cy - 0.5, 0.95, 3.0, 1.0, 0.15, -1, tm["escuro"])
             m.caixa(cx + 0.5, cy - 0.7, 1.1, 0.9, 1.4, 1.0, -1, METAL); zt = 2.2
         elif t == "predio":
             m.caixa(cx - 1.5, cy - 1.3, 0.15, 3.0, 2.6, 1.6, idx, "")
-            m.caixa(cx - 1.65, cy - 1.45, 1.75, 3.3, 2.9, 0.15, -1, ESCURO); zt = 2.0
+            m.caixa(cx - 1.65, cy - 1.45, 1.75, 3.3, 2.9, 0.15, -1, tm["escuro"]); zt = 2.0
         else:
             m.caixa(cx - 1.2, cy - 1.0, 0.15, 2.4, 2.0, 1.6, idx, "")
             m.caixa(cx - 0.6, cy - 0.5, 1.75, 1.2, 1.0, 0.8, -1, METAL); zt = 2.6
         topo[rec] = (cx, cy, zt)
     xs = [p[0] for p in pos.values()]; ys = [p[1] for p in pos.values()]
     x0, x1, y0, y1 = min(xs) - 2.5, max(xs) + 6.0, min(ys) - 2.5, max(ys) + 5.5
-    m.caixa(x0, y0, -0.3, x1 - x0, y1 - y0, 0.3, -1, "#111827")  # piso
+    m.caixa(x0, y0, -0.3, x1 - x0, y1 - y0, 0.3, -1, tm["piso"])  # piso
     grade = ([], [], [])
     for xv in np.arange(x0, x1 + 0.1, 2.75):
         grade[0].extend([xv, xv, None]); grade[1].extend([y0, y1, None]); grade[2].extend([0.01, 0.01, None])
@@ -360,82 +367,155 @@ def estado_exec(df, t, tol):
     return e.assign(status=np.select([atr <= 0, atr <= tol], ["No prazo", "Em risco"], "Atrasada"))
 
 
-def figura_fabrica(g, e):
+def ocupacao(df, t, janela=480):
+    """Fração do tempo em que cada recurso esteve ocupado nas últimas `janela` min (máx. 100%)."""
+    t = pd.Timestamp(t)
+    ini_j = t - pd.Timedelta(minutes=janela)
+    a_ = df.real_inicio.clip(lower=ini_j); b_ = df.real_fim.clip(upper=t)
+    busy = ((b_ - a_).dt.total_seconds().clip(lower=0) / 60).groupby(df.recurso).sum()
+    return (busy / janela).clip(upper=1.0)
+
+
+def _caminho(topo, recs):
+    xs, ys = [], []
+    for a_, b_ in zip(recs, recs[1:]):
+        if a_ in topo and b_ in topo and a_ != b_:
+            ax, ay, _ = topo[a_]; bx, by, _ = topo[b_]
+            xs += [ax, bx, bx]; ys += [ay, ay, by]
+    return xs, ys
+
+
+def _pos_transito(topo, a_, b_, f):
+    ax, ay, _ = topo[a_]; bx, by, _ = topo[b_]
+    l1, l2 = abs(bx - ax), abs(by - ay)
+    d_ = f * ((l1 + l2) or 1)
+    if d_ <= l1:
+        return ax + np.sign(bx - ax) * d_, ay
+    return bx, ay + np.sign(by - ay) * (d_ - l1)
+
+
+def figura_fabrica(g, e, tr, ocup, tema, rota=None, op_sel=None):
+    tm = TEMAS[tema]; cor_fab = {**COR_FAB, "Ocioso": tm["ocioso"]}
     topo, nomes = g["topo"], g["nomes"]
     est = {r_: "Ocioso" for r_ in nomes}
     for r_, s_ in zip(e.recurso, e.status):
         if GRAVIDADE[s_] > GRAVIDADE[est[r_]]:
             est[r_] = s_
-    cor_est = np.array([COR_FAB[est[r_]] for r_ in nomes], dtype=object)
+    cor_est = np.array([cor_fab[est[r_]] for r_ in nomes], dtype=object)
     face = np.where(g["rec"] >= 0, cor_est[np.maximum(g["rec"], 0)], g["cor"]).tolist()
     v, f = g["v"], g["f"]
     fig = go.Figure(go.Mesh3d(
         x=v[:, 0], y=v[:, 1], z=v[:, 2], i=f[:, 0], j=f[:, 1], k=f[:, 2], facecolor=face, flatshading=True,
-        lighting=dict(ambient=0.55, diffuse=0.85, specular=0.25, roughness=0.6),
+        lighting=dict(ambient=tm["amb"], diffuse=0.85, specular=0.25, roughness=0.6),
         lightposition=dict(x=-200, y=-300, z=500), hoverinfo="skip"))
     fig.add_trace(go.Scatter3d(x=g["grade"][0], y=g["grade"][1], z=g["grade"][2], mode="lines",
-                               line=dict(color="#1F2937", width=1), hoverinfo="skip"))
+                               line=dict(color=tm["grade"], width=1), hoverinfo="skip"))
     fig.add_trace(go.Scatter3d(x=g["tubo"][0], y=g["tubo"][1], z=g["tubo"][2], mode="lines",
-                               line=dict(color="#475569", width=6), hoverinfo="skip"))
-    por_rec = {r_: gr for r_, gr in e.groupby("recurso")}
-    lx, ly, lz, lcor, ltxt, hov, nome_t = [], [], [], [], [], [], []
-    ox, oy, oz, ot = [], [], [], []
+                               line=dict(color=tm["tubo"], width=6), hoverinfo="skip"))
+    # barras de ocupação (últimas 8 h)
+    trilho = ([], [], []); barras = {c_: ([], [], []) for c_ in ("#10B981", "#F59E0B", "#EF4444")}
     for r_ in nomes:
-        cx, cy, zt = topo[r_]
-        gr = por_rec.get(r_)
+        cx, cy, _ = topo[r_]; u = float(ocup.get(r_, 0.0)); bx, by = cx + 1.85, cy - 1.4
+        trilho[0].extend([bx, bx, None]); trilho[1].extend([by, by, None]); trilho[2].extend([0.15, 3.15, None])
+        if u > 0.01:
+            bar = barras["#10B981" if u < 0.6 else ("#F59E0B" if u < 0.85 else "#EF4444")]
+            bar[0].extend([bx, bx, None]); bar[1].extend([by, by, None]); bar[2].extend([0.15, 0.15 + 3 * u, None])
+    fig.add_trace(go.Scatter3d(x=trilho[0], y=trilho[1], z=trilho[2], mode="lines",
+                               line=dict(color=tm["trilho"], width=8), hoverinfo="skip"))
+    for c_, (xs, ys, zs) in barras.items():
+        if xs:
+            fig.add_trace(go.Scatter3d(x=xs, y=ys, z=zs, mode="lines", line=dict(color=c_, width=8), hoverinfo="skip"))
+    # rota da ordem destacada
+    if rota:
+        xs, ys = _caminho(topo, rota)
+        if xs:
+            fig.add_trace(go.Scatter3d(x=xs, y=ys, z=[1.0] * len(xs), mode="lines",
+                                       line=dict(color="#FACC15", width=9), hoverinfo="skip"))
+    por_rec = {r_: gr for r_, gr in e.groupby("recurso")}
+    lx, ly, lz, lcor, hov, ox, oy, oz, ot = [], [], [], [], [], [], [], [], []
+    for r_ in nomes:
+        cx, cy, zt = topo[r_]; gr = por_rec.get(r_)
         det = "" if gr is None else "".join(f"<br>{q.op} · {q.etapa} ({q.status})" for q in gr.itertuples())
-        lx.append(cx); ly.append(cy); lz.append(zt + 0.5); lcor.append(COR_FAB[est[r_]])
-        hov.append(f"<b>{r_}</b><br>{est[r_]}{det}"); nome_t.append(r_)
+        lx.append(cx); ly.append(cy); lz.append(zt + 0.5); lcor.append(cor_fab[est[r_]])
+        hov.append(f"<b>{r_}</b><br>{est[r_]} · ocupação 8h: {float(ocup.get(r_, 0)):.0%}{det}")
         if gr is not None:
-            for n, q in enumerate(gr.itertuples()):
-                ox.append(cx); oy.append(cy); oz.append(zt + 1.9 + 0.8 * n); ot.append(q.op)
+            ox.append(cx); oy.append(cy); oz.append(zt + 1.9)
+            ot.append(", ".join(gr.op) if len(gr) <= 2 else f"{len(gr)} ordens")
+    fig.add_trace(go.Scatter3d(x=lx, y=[y_ - 2.0 for y_ in ly], z=[0.2] * len(lx), mode="text", text=list(nomes),
+                               textfont=dict(color=tm["txt"], size=10), hoverinfo="skip"))
     ativos = [i for i, r_ in enumerate(nomes) if est[r_] != "Ocioso"]
     if ativos:
         fig.add_trace(go.Scatter3d(x=[lx[i] for i in ativos], y=[ly[i] for i in ativos], z=[lz[i] for i in ativos],
                                    mode="markers", hoverinfo="skip",
                                    marker=dict(size=20, color=[lcor[i] for i in ativos], opacity=0.25)))
-    fig.add_trace(go.Scatter3d(x=lx, y=ly, z=lz, mode="markers+text", text=nome_t, textposition="top center",
-                               textfont=dict(color="#CBD5E1", size=10), hovertext=hov, hoverinfo="text",
+    fig.add_trace(go.Scatter3d(x=lx, y=ly, z=lz, mode="markers", hovertext=hov, hoverinfo="text",
                                marker=dict(size=8, color=lcor, line=dict(color="#0B0F17", width=1))))
     if ox:
         fig.add_trace(go.Scatter3d(x=ox, y=oy, z=oz, mode="markers+text", text=ot, textposition="middle right",
-                                   textfont=dict(color="#38BDF8", size=10), hoverinfo="skip",
-                                   marker=dict(size=5, color="#38BDF8", symbol="diamond")))
-    vistas = {"Isométrica": (1.5, -1.7, 1.0), "Superior": (0.01, -0.02, 2.6), "Frontal": (0.0, -2.2, 0.45)}
+                                   textfont=dict(color="#0284C7" if tema != "Escuro" else "#38BDF8", size=10),
+                                   hoverinfo="skip", marker=dict(size=5, color="#38BDF8", symbol="diamond")))
+    # ordens em trânsito (andando pelas tubulações)
+    if len(tr):
+        px_, py_, pt = [], [], []
+        for q in tr.itertuples():
+            if q.a in topo and q.b in topo:
+                x_, y_ = _pos_transito(topo, q.a, q.b, q.f); px_.append(x_); py_.append(y_); pt.append(q.op)
+        if px_:
+            fig.add_trace(go.Scatter3d(x=px_, y=py_, z=[0.9] * len(px_), mode="markers+text", text=pt,
+                                       textposition="top center", textfont=dict(color=tm["txt"], size=9),
+                                       hoverinfo="skip", marker=dict(size=7, color="#FACC15",
+                                                                     line=dict(color="#0B0F17", width=1))))
+    if op_sel:
+        cur = e[e.op == op_sel]
+        if len(cur) and cur.recurso.iloc[0] in topo:
+            cx, cy, zt = topo[cur.recurso.iloc[0]]
+            fig.add_trace(go.Scatter3d(x=[cx], y=[cy], z=[zt + 3.2], mode="markers+text", text=[op_sel],
+                                       textposition="top center", hoverinfo="skip",
+                                       textfont=dict(color="#CA8A04", size=12),
+                                       marker=dict(size=11, color="#FACC15", symbol="diamond")))
+    vistas = {"Isométrica": (1.2, -1.4, 0.85), "Superior": (0.01, -0.02, 2.6), "Frontal": (0.0, -2.2, 0.45)}
     oc = dict(visible=False)
     fig.update_layout(
         showlegend=False, height=640, margin=dict(l=0, r=0, t=0, b=0), uirevision="fabrica",
-        paper_bgcolor="rgba(0,0,0,0)", font_color="#E0E6ED",
-        scene=dict(xaxis=oc, yaxis=oc, zaxis=oc, aspectmode="data", bgcolor="rgba(0,0,0,0)",
-                   camera=dict(eye=dict(x=1.5, y=-1.7, z=1.0))),
-        updatemenus=[dict(type="buttons", direction="right", x=0.01, y=0.99, bgcolor="#1A2130",
-                          font=dict(color="#E0E6ED"),
+        paper_bgcolor=tm["bg"], font_color=tm["txt"],
+        scene=dict(xaxis=oc, yaxis=oc, zaxis=oc, aspectmode="data", bgcolor=tm["bg"],
+                   camera=dict(eye=dict(x=1.2, y=-1.4, z=0.85))),
+        updatemenus=[dict(type="buttons", direction="right", x=0.01, y=0.99, bgcolor=tm["btn"],
+                          font=dict(color=tm["txt"]),
                           buttons=[dict(label=k, method="relayout",
-                                        args=[{"scene.camera.eye": dict(x=a, y=b, z=c)}])
-                                   for k, (a, b, c) in vistas.items()])])
+                                        args=[{"scene.camera.eye": dict(x=a_, y=b_, z=c_)}])
+                                   for k, (a_, b_, c_) in vistas.items()])])
     return fig
 
 
 @st.cache_data(show_spinner=False)
-def mapa_fabrica(df):
+def mapa_fabrica(df, tema):
     ordem = df.groupby("recurso").ordem_etapa.mean().round().astype(int)
-    d_ = df.sort_values(["op", "ordem_etapa"])
-    prox = d_.groupby("op").recurso.shift(-1)
-    pares = {(a, b) for a, b in zip(d_.recurso, prox) if isinstance(b, str) and a != b}
-    return geometria(tuple(ordem.items()), tuple(sorted(pares)))
+    d_ = df.sort_values(["op", "ordem_etapa"]).copy()
+    d_["b"] = d_.groupby("op").recurso.shift(-1)
+    d_["t1"] = d_.groupby("op").real_inicio.shift(-1)
+    d_ = d_.dropna(subset=["b"])
+    d_ = d_[d_.recurso != d_.b]
+    pares = {(a_, b_) for a_, b_ in zip(d_.recurso, d_.b)}
+    g = geometria(tuple(ordem.items()), tuple(sorted(pares)), tema)
+    g["trans"] = d_.rename(columns={"recurso": "a", "real_fim": "t0"})[["op", "a", "b", "t0", "t1"]]
+    return g
 # 3D>>
 
 with tab_3d:
     st.header("🏭 Fábrica 3D")
-    f1, f2 = st.columns([2, 1])
-    fonte_t = f1.radio("Relógio da fábrica", ["Horário da barra lateral", "Simulação automática", "Hora real do sistema"],
+    k1, k2, k3, k4 = st.columns([3, 1.4, 1.4, 1.6])
+    fonte_t = k1.radio("Relógio da fábrica", ["Horário da barra lateral", "Simulação automática", "Hora real do sistema"],
                        horizontal=True)
-    vel = f2.select_slider("Min simulados por segundo", [1, 5, 10, 30, 60], value=10)
+    tema3d = k2.selectbox("Tema", list(TEMAS))
+    op_dest = k3.selectbox("Destacar ordem", ["(nenhuma)"] + sorted(df.op.unique()))
+    vel = k4.select_slider("Min simulados por segundo", [1, 2, 5, 10, 30, 60], value=5)
     if fonte_t == "Simulação automática" and st.button("⏮ Reiniciar do começo"):
         st.session_state["t3d"] = ini
     st.session_state.setdefault("t3d", agora)
     intervalo = {"Horário da barra lateral": None, "Simulação automática": 1, "Hora real do sistema": 5}[fonte_t]
-    geo = mapa_fabrica(df)
+    geo = mapa_fabrica(df, tema3d)
+    rota = None if op_dest == "(nenhuma)" else list(df[df.op == op_dest].sort_values("ordem_etapa").recurso)
 
     @st.fragment(run_every=intervalo)
     def fabrica():
@@ -448,14 +528,25 @@ with tab_3d:
         else:
             t = agora
         e = estado_exec(df, t, tol)
-        c = st.columns(4)
+        oc = ocupacao(df, t)
+        tr = geo["trans"]
+        tr = tr[(tr.t0 <= t) & (tr.t1 > t)].copy()
+        tr["f"] = ((pd.Timestamp(t) - tr.t0).dt.total_seconds() / (tr.t1 - tr.t0).dt.total_seconds()).clip(0, 1)
+        c = st.columns(5)
         c[0].metric("Relógio", f"{pd.Timestamp(t):%d/%m %H:%M}")
         c[1].metric("Recursos em operação", e.recurso.nunique(), f"de {len(geo['nomes'])}", delta_color="off")
-        c[2].metric("Etapas em risco", int((e.status == "Em risco").sum()))
-        c[3].metric("Etapas atrasadas", int((e.status == "Atrasada").sum()))
-        mostrar(figura_fabrica(geo, e))
-        st.caption("🟩 no prazo · 🟨 em risco · 🟥 atrasado · ⬜ ocioso · 🔹 ordens em execução. "
+        c[2].metric("Ocupação média (8h)", f"{oc.mean():.0%}")
+        c[3].metric("Etapas em risco", int((e.status == "Em risco").sum()))
+        c[4].metric("Etapas atrasadas", int((e.status == "Atrasada").sum()))
+        mostrar(figura_fabrica(geo, e, tr, oc, tema3d, rota, None if op_dest == "(nenhuma)" else op_dest))
+        st.caption("Lâmpada: 🟩 no prazo · 🟨 em risco · 🟥 atrasado · ⬜ ocioso. 🔹 ordem em execução · 🟡 ordem em trânsito "
+                   "pela tubulação · barra lateral do equipamento = ocupação nas últimas 8 h. "
                    "Arraste para girar, role para aproximar e use os botões para trocar a vista.")
+        if len(e):
+            q = e[["op", "produto", "recurso", "etapa", "status"]].copy()
+            q["progresso (%)"] = ((pd.Timestamp(t) - e.real_inicio).dt.total_seconds() / 60
+                                  / e.dur_padrao_min * 100).clip(0, 200).round(0).astype(int)
+            tabela(q.sort_values("progresso (%)", ascending=False))
 
     fabrica()
 
