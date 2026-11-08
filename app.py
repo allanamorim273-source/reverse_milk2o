@@ -190,8 +190,8 @@ if modo.startswith("Operador"):
     visao_geral(simples=True)
     st.stop()
 
-(tab_vis, tab_tl, tab_mc, tab_rev, tab_wi, tab_garg, tab_dados) = st.tabs(
-    ["🚦 Visão geral", "📊 Linha do tempo", "🎲 Monte Carlo", "⏪ Agendamento reverso",
+(tab_vis, tab_tl, tab_mc, tab_3d, tab_rev, tab_wi, tab_garg, tab_dados) = st.tabs(
+    ["🚦 Visão geral", "📊 Linha do tempo", "🎲 Monte Carlo", "🏭 Fábrica 3D", "⏪ Agendamento reverso",
      "⚡ Simular atraso (E se...?)", "🔍 Gargalos e atrasos", "📋 Dados e premissas"])
 
 # ----------------------------- 1. visão geral -----------------------------
@@ -259,6 +259,109 @@ with tab_mc:
             mostrar(hist)
             st.caption(f"Simulação a partir de {fmt(t0)} ({int(sims)} cenários). "
                        "Barras à direita da linha do prazo são cenários em que a ordem atrasa.")
+
+# <<3D
+COR_FAB = {"Ocioso": "#475569", "No prazo": "#10B981", "Em risco": "#F59E0B", "Atrasada": "#EF4444"}
+
+
+def layout_fabrica(dd):
+    """Posição (x, y) de cada recurso: colunas = posição média na rota, da esquerda p/ direita."""
+    ordem = dd.groupby("recurso").ordem_etapa.mean().round().astype(int)
+    pos, cont = {}, {}
+    for rec in sorted(ordem.index, key=lambda n: (ordem[n], n)):
+        c = int(ordem[rec]); k = cont.get(c, 0); cont[c] = k + 1
+        pos[rec] = (c * 4.5, k * 3.5)
+    return pos
+
+
+def dimensoes(nome):
+    n = nome.lower()
+    if "tanque" in n or "torre" in n: return 2.2, 2.2, 3.0
+    if "linha" in n: return 3.0, 1.6, 1.2
+    return 2.4, 2.0, 1.8
+
+
+def caixa(x, y, w, p, h, cor, hover):
+    xs = [x, x + w, x + w, x, x, x + w, x + w, x]
+    ys = [y, y, y + p, y + p, y, y, y + p, y + p]
+    zs = [0, 0, 0, 0, h, h, h, h]
+    return go.Mesh3d(x=xs, y=ys, z=zs, color=cor, opacity=0.95, flatshading=True,
+                     i=[0, 0, 4, 4, 0, 0, 1, 1, 2, 2, 3, 3], j=[1, 2, 5, 6, 1, 5, 2, 6, 3, 7, 0, 4],
+                     k=[2, 3, 6, 7, 5, 4, 6, 5, 7, 6, 4, 7], hovertext=hover, hoverinfo="text")
+
+
+def figura_fabrica(dd):
+    pos = layout_fabrica(dd)
+    exe = dd[dd.situacao == "Em execução"]
+    fig = go.Figure()
+    xs_all = [p[0] for p in pos.values()]; ys_all = [p[1] for p in pos.values()]
+    x0, x1, y0, y1 = min(xs_all) - 2, max(xs_all) + 5, min(ys_all) - 2.5, max(ys_all) + 4
+    fig.add_trace(go.Mesh3d(x=[x0, x1, x1, x0], y=[y0, y0, y1, y1], z=[-0.05] * 4, i=[0, 0], j=[1, 2], k=[2, 3],
+                            color="#1A2130", hoverinfo="skip"))
+    mx, my, mz, mt, lx, ly, lt = [], [], [], [], [], [], []
+    for rec, (x, y) in pos.items():
+        w, p, h = dimensoes(rec)
+        e = exe[exe.recurso == rec]
+        if e.empty:
+            est = "Ocioso"
+        elif (e.status_etapa == "Atrasada").any():
+            est = "Atrasada"
+        elif (e.status_etapa == "Em risco").any():
+            est = "Em risco"
+        else:
+            est = "No prazo"
+        linhas = "".join(f"<br>{r_.op} · {r_.etapa} ({r_.status_etapa})" for r_ in e.itertuples())
+        fig.add_trace(caixa(x, y, w, p, h, COR_FAB[est], f"<b>{rec}</b><br>{est}{linhas}"))
+        lx.append(x + w / 2); ly.append(y - 0.5); lt.append(rec)
+        for n, r_ in enumerate(e.itertuples()):
+            mx.append(x + w / 2); my.append(y + p / 2); mz.append(h + 0.7 + 0.8 * n); mt.append(r_.op)
+    fig.add_trace(go.Scatter3d(x=lx, y=ly, z=[0.1] * len(lx), mode="text", text=lt, hoverinfo="skip",
+                               textfont=dict(color="#E0E6ED", size=10)))
+    if mx:
+        fig.add_trace(go.Scatter3d(x=mx, y=my, z=mz, mode="markers+text", text=mt, textposition="top center",
+                                   marker=dict(size=5, color="#38BDF8"), textfont=dict(color="#38BDF8", size=10),
+                                   hoverinfo="text"))
+    ocultar = dict(visible=False)
+    fig.update_layout(showlegend=False, height=620, margin=dict(l=0, r=0, t=0, b=0),
+                      paper_bgcolor="rgba(0,0,0,0)", font_color="#E0E6ED",
+                      scene=dict(xaxis=ocultar, yaxis=ocultar, zaxis=ocultar, aspectmode="data",
+                                 camera=dict(eye=dict(x=0.1, y=-1.6, z=1.1)), bgcolor="rgba(0,0,0,0)"))
+    return fig
+# 3D>>
+
+with tab_3d:
+    st.header("🏭 Fábrica 3D")
+    f1, f2 = st.columns([2, 1])
+    fonte_t = f1.radio("Relógio da fábrica", ["Horário da barra lateral", "Simulação automática", "Hora real do sistema"],
+                       horizontal=True)
+    vel = f2.select_slider("Min simulados por segundo", [1, 5, 10, 30, 60], value=10)
+    if fonte_t == "Simulação automática" and st.button("⏮ Reiniciar do começo"):
+        st.session_state["t3d"] = ini
+    st.session_state.setdefault("t3d", agora)
+    intervalo = {"Horário da barra lateral": None, "Simulação automática": 1, "Hora real do sistema": 5}[fonte_t]
+
+    @st.fragment(run_every=intervalo)
+    def fabrica():
+        if fonte_t == "Simulação automática":
+            nxt = st.session_state["t3d"] + timedelta(minutes=vel)
+            st.session_state["t3d"] = nxt if nxt <= fim else ini
+            t = st.session_state["t3d"]
+        elif fonte_t == "Hora real do sistema":
+            t = datetime.now()
+        else:
+            t = agora
+        dd = classificar_etapas(df, t, tol)
+        exe = dd[dd.situacao == "Em execução"]
+        c = st.columns(4)
+        c[0].metric("Relógio", f"{pd.Timestamp(t):%d/%m %H:%M}")
+        c[1].metric("Recursos em operação", exe.recurso.nunique(), f"de {dd.recurso.nunique()}", delta_color="off")
+        c[2].metric("Etapas em risco", int((exe.status_etapa == "Em risco").sum()))
+        c[3].metric("Etapas atrasadas", int((exe.status_etapa == "Atrasada").sum()))
+        mostrar(figura_fabrica(dd))
+        st.caption("🟩 no prazo · 🟨 em risco · 🟥 atrasado · ⬜ ocioso · pontos azuis = ordens em execução. "
+                   "Arraste para girar, role para aproximar, passe o mouse para ver detalhes.")
+
+    fabrica()
 
 # ----------------------------- 3. agendamento reverso -----------------------------
 with tab_rev:
